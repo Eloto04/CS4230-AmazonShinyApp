@@ -4,7 +4,7 @@ from shiny import App, render, ui
 # Define the user interface
 app_ui = ui.page_fluid(
     ui.h2("Hello, Python Shiny!"),
-    ui.input_text("name", "Enter your name:", value="Eli"),
+    ui.input_text("name", "Enter your name:", value="Noah"),
     ui.input_slider("age", "Select your age:", 0, 100, 25),
     ui.output_text("greeting"),
 )
