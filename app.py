@@ -1,112 +1,159 @@
 # app.py
 """
-Preliminary Shiny dashboard layout for the Amazon graph project.
+Shiny dashboard for the Amazon graph project.
 
-This file defines a simple sidebar + main layout with:
+This file defines a sidebar + main layout with:
 - controls for metric/community selection
-- an interactive graph area (placeholder populated with a small example Plotly chart)
-- a dynamic summary / metric box
+- an interactive bar chart showing top nodes
+- a dynamic summary panel
 - a results table
-
-The actual graph/metric logic can be swapped in later where indicated.
 """
 from shiny import App, ui, render, reactive
 import pandas as pd
-import numpy as np
 import plotly.express as px
+import networkx as nx
+from infomap import Infomap
 
-
-# ----------------------
 # User interface (layout)
-# ----------------------
 app_ui = ui.page_fluid(
     ui.h2("Amazon Graph — Interactive Dashboard"),
     # Sidebar for inputs and filters
     ui.layout_sidebar(
         ui.sidebar(
             ui.h4("Filters & Controls"),
-            # Select the metric that will determine node color/size in the graph
+            # Metric selection
             ui.input_select(
                 "metric",
                 "Color / metric:",
-                {
-                    "degree": "Degree",
-                    "betweenness": "Betweenness (placeholder)",
-                    "pagerank": "PageRank (placeholder)",
-                },
-                selected="degree",
+                {}
             ),
-            # Select community (or "All") -- placeholder choices for now
+            # Community selection
             ui.input_select(
                 "community",
                 "Community:",
-                {
-                    "all": "All",
-                    "c1": "Community 1",
-                    "c2": "Community 2",
-                    "c3": "Community 3",
-                },
-                selected="all",
+                {}
             ),
-            # Number of top nodes to show (example numeric control)
+            # Number of top nodes to show
             ui.input_slider("top_n", "Show top N nodes:", min=5, max=50, value=20),
-            # Manual refresh button (useful when swapping heavy visualizations)
-            ui.input_action_button("refresh", "Refresh view"),
-            ui.markdown(
-                """
-            **Notes:**
-            - The graph area below is a placeholder using Plotly.
-            - Replace the plotting code in `server()` with your real network visualization.
-            """
-            ),
         ),
         # Main area with graph + summary + table
-        # (ui.layout_sidebar takes content directly after sidebar, no wrapper needed)
         ui.row(
             ui.column(8, ui.output_ui("graph_ui")),
             ui.column(
                 4,
                 ui.panel_well(
                     ui.h4("Summary metrics"),
-                    # small dynamic HTML block to hold metrics / key numbers
                     ui.output_ui("summary_ui"),
                 ),
             ),
         ),
         ui.h4("Results table"),
-        # Data table showing filtered rows (Pandas DataFrame can be returned from render.table)
-        ui.output_table("results_table"),
+        ui.output_data_frame("results_table"),
     ),
 )
 
 
-# ----------------------
-# Server logic
-# ----------------------
 def server(input, output, session):
-    # Create a small synthetic dataset for demonstration.
-    # In your real app replace this with your graph nodes/metrics dataset.
-    rng = np.random.default_rng(123)
-    nodes = pd.DataFrame(
-        {
-            "node": [f"n{i}" for i in range(1, 101)],
-            "x": rng.normal(size=100),
-            "y": rng.normal(size=100),
-            "degree": rng.integers(1, 50, size=100),
-            "betweenness": rng.random(size=100),
-            "pagerank": rng.random(size=100),
-            "community": rng.choice(["c1", "c2", "c3"], size=100),
-        }
-    )
+    # Use reactive.calc to load data once and cache it
+    @reactive.calc
+    def load_data():
+        print("Loading Amazon graph from AmazonGraph.txt...")
+        G = nx.read_edgelist('AmazonGraph.txt', 
+                             create_using=nx.DiGraph(), 
+                             nodetype=int,
+                             data=False)
+        print(f"Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        
+        # Run Infomap community detection
+        print("Running Infomap community detection...")
+        im = Infomap(directed=True, silent=True)
+        
+        # Add all edges to Infomap
+        for u, v in G.edges():
+            im.add_link(u, v)
+        
+        # Run the algorithm
+        im.run()
+        
+        # Extract communities
+        communities = {}
+        node_to_community = {}
+        
+        for node in im.nodes:
+            node_id = node.node_id
+            module_id = node.module_id
+            if module_id not in communities:
+                communities[module_id] = []
+            communities[module_id].append(node_id)
+            node_to_community[node_id] = module_id
+        
+        print(f"Found {len(communities)} communities")
+        
+        # Sort communities by Infomap ID for the dropdown
+        community_list = [(comm_id, len(nodes)) for comm_id, nodes in communities.items()]
+        community_list.sort(key=lambda x: x[0])  # Sort by community ID
+        
+        # Build community choices for dropdown
+        community_choices = {"all": "All communities"}
+        for comm_id, size in community_list:
+            community_choices[str(comm_id)] = f"Community {comm_id} ({size} nodes)"
+        
+        # Calculate basic metrics for all nodes
+        print("Calculating node metrics...")
+        degree_dict = dict(G.degree())
+        
+        # Calculate PageRank
+        print("Calculating PageRank...")
+        pagerank = nx.pagerank(G, alpha=0.85, max_iter=100)
+        
+        # Calculate Eigenvector Centrality
+        print("Calculating Eigenvector Centrality...")
+        eigenvector = nx.eigenvector_centrality(G, max_iter=1000, tol=1e-6)
+        
+        # Create a dataframe with node information
+        nodes = pd.DataFrame({
+            'node': list(G.nodes()),
+            'degree': [degree_dict[n] for n in G.nodes()],
+            'in_degree': [G.in_degree(n) for n in G.nodes()],
+            'out_degree': [G.out_degree(n) for n in G.nodes()],
+            'community': [node_to_community.get(n, -1) for n in G.nodes()],
+            'pagerank': [pagerank.get(n, 0.0) for n in G.nodes()],
+            'eigenvector': [eigenvector.get(n, 0.0) for n in G.nodes()],
+        })
+        
+        print(f"Node dataframe created with {len(nodes)} nodes")
+        print("All data loaded and ready!")
+
+        # Update the community dropdown with real communities
+        ui.update_select(
+            "community",
+            choices=community_choices,
+            selected="all"
+        )
+        
+        ui.update_select(
+                "metric",
+                choices={
+                    "degree": "Degree",
+                    "pagerank": "PageRank",
+                    "eigenvector": "Eigenvector Centrality",
+                }
+        )
+
+        return nodes
 
     # Reactive helper: build a filtered dataframe based on inputs
     def get_filtered_df():
+        # Call load_data() to get the dataframe (cached after first call)
+        nodes = load_data()
+        
         df = nodes.copy()
         comm = input.community()
         if comm and comm != "all":
-            df = df[df["community"] == comm]
+            # Use the community ID directly
+            df = df[df["community"] == int(comm)]
         # sort by chosen metric and take top N
-        metric = input.metric() or "degree"
+        metric = input.metric()
         top_n = int(input.top_n() or 20)
         df = df.sort_values(metric, ascending=False).head(top_n)
         return df
@@ -115,19 +162,22 @@ def server(input, output, session):
     @output
     @render.ui
     def graph_ui():
-        # Build a small interactive scatter that demonstrates zoom/pan and coloring.
-        # Replace this with your network visualization (e.g., vis.js, pyvis, or a Plotly network layout)
+        # Call get_filtered_df first to establish reactive dependency (same as table)
         df = get_filtered_df()
-        metric = input.metric() or "degree"
-        fig = px.scatter(
-            df,
-            x="x",
-            y="y",
+        
+        metric = input.metric()
+        
+        # Create a simple bar chart showing top nodes by selected metric
+        fig = px.bar(
+            df.head(20),
+            x='node',
+            y=metric,
             color=metric,
-            hover_name="node",
-            size=metric,
-            title=f"Graph placeholder — colored by {metric}",
+            title=f"Top nodes by {metric}",
+            labels={'node': 'Node ID', metric: metric.capitalize()}
         )
+        fig.update_xaxes(type='category')
+        
         # Plotly figure converted to HTML fragment; Shiny will render it in the UI.
         html_fragment = fig.to_html(include_plotlyjs="cdn", full_html=False)
         return ui.HTML(html_fragment)
@@ -137,10 +187,8 @@ def server(input, output, session):
     @render.ui
     def summary_ui():
         df = get_filtered_df()
-        # Example summary values (replace with your real metrics)
         n_nodes = len(df)
         avg_degree = float(df["degree"].mean()) if n_nodes else 0.0
-        # Simple HTML snippet — keep it minimal and easy to style later
         html = f"""
         <div>
           <p><strong>Shown nodes:</strong> {n_nodes}</p>
@@ -150,22 +198,17 @@ def server(input, output, session):
         """
         return ui.HTML(html)
 
-    # Results table: return the filtered DataFrame so Shiny will render it as a table
     @output
-    @render.table
+    @render.data_frame
     def results_table():
         df = get_filtered_df()
-        # return a small subset of columns for readability
-        return df[["node", "community", "degree", "betweenness", "pagerank"]]
-
-    # Optional: react to the refresh button (keeps app responsive when swapping heavy visualizations)
-    @reactive.effect
-    @reactive.event(input.refresh)
-    def _on_refresh():
-        # When user clicks refresh we trigger a no-op but it can be used to re-run expensive ops.
-        # For now we just print to the console (visible when running locally).
-        print("Refresh requested — you can reload heavy visualizations here.")
+        result_df = df[["node", "community", "degree", "in_degree", "out_degree", "pagerank", "eigenvector"]].copy()
+        
+        # Format numeric columns to avoid scientific notation
+        result_df['pagerank'] = result_df['pagerank'].apply(lambda x: f"{x:.8f}")
+        result_df['eigenvector'] = result_df['eigenvector'].apply(lambda x: f"{x:.8f}")
+        
+        return result_df.reset_index(drop=True)
 
 
-# Create the Shiny app object
 app = App(app_ui, server)
