@@ -1,4 +1,14 @@
+# Shiny web framework
 shiny
+
+# Data manipulation and analysis
 pandas
-plotly
 numpy
+
+# Visualization
+plotly
+matplotlib
+
+# Network analysis
+networkx
+infomap
