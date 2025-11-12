@@ -4,6 +4,7 @@ shiny
 # Data manipulation and analysis
 pandas
 numpy
+scipy
 
 # Visualization
 plotly
@@ -11,4 +12,4 @@ matplotlib
 
 # Network analysis
 networkx
-infomap
+infomap; python_version=="3.10"
