@@ -1,12 +1,14 @@
 # app.py
 """
-Shiny dashboard for the Amazon graph project.
+Interactive Shiny Dashboard for Amazon Product Co-Purchase Network Analysis
 
-This file defines a sidebar + main layout with:
-- controls for metric/community selection
-- an interactive bar chart showing top nodes
-- a dynamic summary panel
-- a results table
+This application provides a comprehensive visualization and analysis interface for exploring
+the Amazon co-purchase network, featuring:
+- Interactive visualizations (bar charts, network graphs, and metric scatter plots)
+- Community detection using the Infomap algorithm
+- Centrality metrics (In-Degree, PageRank, Eigenvector Centrality)
+- Dynamic filtering by community and top N nodes
+- Comprehensive network statistics and summaries
 """
 from shiny import App, ui, render, reactive
 import pandas as pd
@@ -15,7 +17,8 @@ import plotly.graph_objects as go
 import networkx as nx
 from infomap import Infomap
 
-# Load graph at startup (fast operation)
+# ==================== DATA LOADING ====================
+# Load the graph structure at startup for fast initial page rendering
 print("Loading Amazon graph from AmazonGraph.txt...")
 G = nx.read_edgelist('AmazonGraph.txt', 
                         create_using=nx.DiGraph(), 
@@ -23,18 +26,18 @@ G = nx.read_edgelist('AmazonGraph.txt',
                         data=False)
 print(f"Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
 
-# Load product metadata at startup (fast operation)
+# Load product metadata (titles, categories, reviews) at startup
 print("Loading product metadata...")
 try:
     products = pd.read_csv('metadata.csv')
     
-    # Check if 'id' column exists, otherwise use first column
+    # Normalize column names: ensure the primary key is named 'node'
     if 'id' in products.columns:
         products = products.rename(columns={'id': 'node'})
     elif products.columns[0] != 'node':
         products = products.rename(columns={products.columns[0]: 'node'})
     
-    # Keep node, title, group, total_review_count, and average_rating columns
+    # Select relevant columns for the dashboard
     columns_to_keep = ['node']
     if 'title' in products.columns:
         columns_to_keep.append('title')
@@ -53,43 +56,45 @@ except Exception as e:
 
 print("Website ready! Heavy computations will run in background...")
 
-# User interface (layout)
+# ==================== USER INTERFACE ====================
+# Define the application layout with sidebar controls and main content area
 app_ui = ui.page_fluid(
     ui.h2("Amazon Graph — Interactive Dashboard"),
-    # Sidebar for inputs and filters
+    # Sidebar: User controls for filtering and visualization options
     ui.layout_sidebar(
         ui.sidebar(
             ui.h4("Filters & Controls"),
-            # Visualization type selection
+            # Select visualization type: Bar Chart, Network Graph, or Experimental Plot
             ui.input_radio_buttons(
                 "viz_type",
                 "Visualization:",
                 choices={
                     "bar": "Bar Chart",
-                    "network": "Network Graph"
+                    "network": "Network Graph",
+                    "metric": "Experimental Plot"
                 },
                 selected="bar"
             ),
-            # Metric selection
+            # Select which centrality metric to analyze and visualize
             ui.input_select(
                 "metric",
-                "Color / Metric:",
+                "Metric:",
                 choices={
-                    "degree": "Degree Centrality",
+                    "in_degree": "In-Degree Centrality",
                     "pagerank": "PageRank",
                     "eigenvector": "Eigenvector Centrality",
                     "total_review_count": "Total Review Count"
                 },
-                selected="degree"
+                selected="in_degree"
             ),
-            # Community selection (will be updated after metrics load)
+            # Community filter (dynamically populated after Infomap completes)
             ui.input_select(
                 "community",
                 "Community:",
                 choices={"all": "All communities"},
                 selected="all"
             ),
-            # Number of top nodes to show
+            # Set the number of top-ranked nodes to display
             ui.input_numeric(
                 "top_n",
                 "Show Top N Nodes:",
@@ -98,7 +103,7 @@ app_ui = ui.page_fluid(
                 max=1000
             ),
         ),
-        # Main area with graph + summary + table
+        # Main content area: visualization, results table, and statistics panels
         ui.row(
             ui.column(
                 8,
@@ -109,7 +114,7 @@ app_ui = ui.page_fluid(
             ui.column(
                 4,
                 ui.panel_well(
-                    ui.h4("Summary Metrics"),
+                    ui.h4("Summative Statistics"),
                     ui.output_ui("summary_ui"),
                 ),
                 ui.panel_well(
@@ -125,27 +130,38 @@ app_ui = ui.page_fluid(
     ),
 )
 
-
+# ==================== SERVER LOGIC ====================
 def server(input, output, session):
-    # Reactive value to store selected node
+    # Human-readable metric names for display in visualizations
+    metric_titles = {
+        'in_degree': 'In-Degree Centrality',
+        'pagerank': 'PageRank',
+        'eigenvector': 'Eigenvector Centrality',
+        'total_review_count': 'Total Review Count'
+    }
+    
+    # Reactive state: tracks the currently selected node from table interactions
     selected_node = reactive.Value(None)
     
-    # Cache for graph layout positions
+    # Performance optimization: cache network layout positions to prevent recalculation on re-renders
     layout_cache = {}
     
-    # Use reactive.calc to compute metrics once and cache them
+    # Performance optimization: store pre-computed community structure and graph-level metrics
+    community_data = {}
+    
+    # Reactive computation: performs expensive calculations once and caches results
     @reactive.calc
     def load_data():
         print("Computing metrics in background...")
         
-        # Run Infomap community detection
+        # Step 1: Community Detection using Infomap algorithm
         print("Running Infomap community detection...")
         im = Infomap(directed=True, silent=True)
         for u, v in G.edges():
             im.add_link(u, v)
         im.run()
         
-        # Extract communities
+        # Extract community assignments for each node
         communities = {}
         node_to_community = {}
         for node in im.nodes:
@@ -158,21 +174,21 @@ def server(input, output, session):
         
         print(f"Found {len(communities)} communities")
         
-        # Build community choices for dropdown
+        # Build dropdown options showing community ID and size
         community_list = [(comm_id, len(nodes)) for comm_id, nodes in communities.items()]
         community_list.sort(key=lambda x: x[0])
         community_choices = {"all": "All communities"}
         for comm_id, size in community_list:
             community_choices[str(comm_id)] = f"Community {comm_id} ({size} nodes)"
         
-        # Calculate metrics
+        # Step 2: Calculate centrality metrics for all nodes
         print("Calculating PageRank...")
         pagerank = nx.pagerank(G, alpha=0.85, max_iter=100)
         
         print("Calculating Eigenvector Centrality...")
         eigenvector = nx.eigenvector_centrality(G, max_iter=1000, tol=1e-6)
         
-        # Create dataframe
+        # Step 3: Build comprehensive node dataframe with all metrics
         degree_dict = dict(G.degree())
         nodes = pd.DataFrame({
             'node': list(G.nodes()),
@@ -184,7 +200,7 @@ def server(input, output, session):
             'eigenvector': [eigenvector.get(n, 0.0) for n in G.nodes()],
         })
         
-        # Merge with product metadata
+        # Step 4: Enrich with product metadata (titles, categories, reviews)
         nodes = nodes.merge(products, on='node', how='left')
         nodes['title'] = nodes['title'].fillna('Unknown Product')
         nodes['group'] = nodes['group'].fillna('Unknown')
@@ -193,7 +209,15 @@ def server(input, output, session):
         
         print("All metrics computed!")
         
-        # Update the community dropdown
+        # Cache community structure for efficient reuse in summary statistics
+        community_data['communities_dict'] = communities
+        community_data['node_to_community'] = node_to_community
+        
+        # Pre-calculate expensive graph-level metrics once
+        community_data['density'] = nx.density(G)
+        community_data['modularity'] = nx.algorithms.community.modularity(G, list(communities.values()))
+        
+        # Dynamically populate community dropdown with detected communities
         ui.update_select(
             "community",
             choices=community_choices,
@@ -202,28 +226,28 @@ def server(input, output, session):
         
         return nodes
 
-    # Reactive helper: build a filtered dataframe based on inputs
+    # Helper function: applies user-selected filters and returns top N nodes
     def get_filtered_df():
-        # Call load_data() to get the dataframe (cached after first call)
+        # Retrieve cached data from reactive computation
         nodes = load_data()
         
         df = nodes.copy()
         comm = input.community()
         if comm and comm != "all":
-            # Use the community ID directly
+            # Filter to selected community only
             df = df[df["community"] == int(comm)]
-        # sort by chosen metric and take top N
+        # Sort by selected metric and return top N nodes
         metric = input.metric()
         top_n = int(input.top_n() or 20)
         df = df.sort_values(metric, ascending=False).head(top_n)
         return df
 
-    # Graph UI: render a Plotly scatter and embed as HTML into the Shiny UI
+    # Render the main visualization based on selected type (bar/network/metric plot)
     @output
     @render.ui
     def graph_ui():
         try:
-            # Call get_filtered_df first to establish reactive dependency (same as table)
+            # Establish reactive dependency on filtered data
             df = get_filtered_df()
         except:
             # Show loading message while metrics are being computed
@@ -239,10 +263,11 @@ def server(input, output, session):
         top_n = int(input.top_n() or 20)
         
         if viz_type == "bar":
-            # Create a bar chart showing top nodes by selected metric
-            # Add highlighting for selected node
+            # Bar Chart: Visualize top nodes ranked by selected metric
+            # Apply red outline to highlight user-selected node
             selected = selected_node()
-            colors = ['red' if node == selected else 'blue' for node in df['node']]
+            colors = ['red' if node == selected else 'rgba(0,0,0,0)' for node in df['node']]
+            widths = [3 if node == selected else 0 for node in df['node']]
             
             fig = go.Figure(data=[
                 go.Bar(
@@ -253,7 +278,7 @@ def server(input, output, session):
                         colorscale='Viridis',
                         line=dict(
                             color=colors,
-                            width=3
+                            width=widths
                         )
                     ),
                     text=df['node'],
@@ -261,43 +286,73 @@ def server(input, output, session):
                 )
             ])
             fig.update_layout(
-                title=f"Top {top_n} nodes by {metric}",
+                title=f"Top {top_n} Nodes by {metric_titles[metric]}",
                 xaxis_title='Node ID',
                 yaxis_title=metric.capitalize()
             )
             fig.update_xaxes(type='category')
+        elif viz_type == "metric":
+            # Scatter Plot: Explore relationship between centrality metric and review count
+            selected = selected_node()
+            
+            # Apply visual highlighting to selected node
+            colors_list = ['red' if node == selected else 'rgba(100, 149, 237, 0.6)' for node in df['node']]
+            sizes = [15 if node == selected else 8 for node in df['node']]
+            
+            fig = go.Figure(data=[
+                go.Scatter(
+                    x=df[metric],
+                    y=df['total_review_count'],
+                    mode='markers',
+                    marker=dict(
+                        size=sizes,
+                        color=df[metric],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title=metric.capitalize()),
+                        line=dict(
+                            color=colors_list,
+                            width=2
+                        )
+                    ),
+                    text=df['node'],
+                    hovertemplate='Node: %{text}<br>' + metric + ': %{x}<br>Total Reviews: %{y}<extra></extra>'
+                )
+            ])
+            fig.update_layout(
+                title=f"{metric_titles[metric]} vs. Review Count (Top {top_n} Nodes)",
+                xaxis_title=metric_titles[metric],
+                yaxis_title='Review Count',
+                height=500
+            )
         else:
-            # Create an interactive network graph showing all filtered nodes
-            # Get the subgraph containing all the filtered nodes
+            # Network Graph: Interactive force-directed visualization of node relationships
+            # Extract subgraph containing only the filtered nodes
             top_nodes = df['node'].tolist()
             subgraph = G.subgraph(top_nodes).copy()
             
-            # Create cache key based on the nodes in this subgraph
+            # Generate unique cache key from node set to reuse layouts
             cache_key = tuple(sorted(top_nodes))
             
-            # Use cached layout if available, otherwise compute and cache it
+            # Retrieve or compute spring layout (prevents layout jumping on re-renders)
             if cache_key not in layout_cache:
                 layout_cache[cache_key] = nx.spring_layout(subgraph, k=0.5, iterations=50, seed=42)
             pos = layout_cache[cache_key]
             
-            # Create edge traces with arrows for directed edges
-            edge_traces = []
-            for edge in subgraph.edges():
-                x0, y0 = pos[edge[0]]
-                x1, y1 = pos[edge[1]]
-                
-                # Create individual edge trace with arrow
-                edge_trace = go.Scatter(
-                    x=[x0, x1],
-                    y=[y0, y1],
+            # Build edge traces for all connections (optimized with list comprehension)
+            edge_traces = [
+                go.Scatter(
+                    x=[pos[edge[0]][0], pos[edge[1]][0]],
+                    y=[pos[edge[0]][1], pos[edge[1]][1]],
                     mode='lines',
                     line=dict(width=0.5, color='#888'),
                     hoverinfo='none',
                     showlegend=False
                 )
-                edge_traces.append(edge_trace)
+                for edge in subgraph.edges()
+            ]
             
-            # Create annotations for arrows
+            # Add directional arrow annotations to show edge direction
             annotations = []
             for edge in subgraph.edges():
                 x0, y0 = pos[edge[0]]
@@ -318,30 +373,22 @@ def server(input, output, session):
                     )
                 )
             
-            # Create node trace
-            node_x = []
-            node_y = []
-            node_text = []
-            node_color = []
-            node_size = []
-            
+            # Build node trace with positions, colors, sizes, and hover text (optimized)
             selected = selected_node()
+            nodes_list = list(subgraph.nodes())
             
-            for node in subgraph.nodes():
-                x, y = pos[node]
-                node_x.append(x)
-                node_y.append(y)
-                node_info = df[df['node'] == node].iloc[0]
-                product_name = node_info['title']
-                
-                # Format metric value based on type
-                if metric == 'total_review_count':
-                    metric_value = f"{int(node_info[metric])}"
-                else:
-                    metric_value = f"{node_info[metric]:.4f}"
-                
+            # Create lookup dictionary for O(1) node data access
+            node_info_dict = {row['node']: row for _, row in df.iterrows()}
+            
+            node_x = [pos[node][0] for node in nodes_list]
+            node_y = [pos[node][1] for node in nodes_list]
+            
+            node_text = []
+            for node in nodes_list:
+                node_info = node_info_dict[node]
+                metric_value = f"{int(node_info[metric])}" if metric == 'total_review_count' else f"{node_info[metric]:.4f}"
                 node_text.append(
-                    f"{product_name}<br>"
+                    f"{node_info['title']}<br>"
                     f"Node ID: {node}<br>"
                     f"Group: {node_info['group']}<br>"
                     f"{metric}: {metric_value}<br>"
@@ -349,13 +396,9 @@ def server(input, output, session):
                     f"Total Reviews: {int(node_info['total_review_count'])}<br>"
                     f"Community: {node_info['community']}"
                 )
-                
-                # Highlight selected node
-                if node == selected:
-                    node_size.append(30)
-                else:
-                    node_size.append(15)
-                node_color.append(node_info[metric])
+            
+            node_size = [30 if node == selected else 15 for node in nodes_list]
+            node_color = [node_info_dict[node][metric] for node in nodes_list]
             
             node_trace = go.Scatter(
                 x=node_x, y=node_y,
@@ -381,7 +424,7 @@ def server(input, output, session):
             
             fig = go.Figure(data=edge_traces + [node_trace],
                           layout=go.Layout(
-                              title=f'Network Graph colored by {metric}. Click/drag to zoom the graph.',
+                              title=f'Network graph colored by {metric_titles[metric]}. Click/drag to zoom the graph.',
                               showlegend=False,
                               hovermode='closest',
                               margin=dict(b=0, l=0, r=0, t=40),
@@ -390,11 +433,11 @@ def server(input, output, session):
                               yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
                           )
         
-        # Plotly figure converted to HTML fragment; Shiny will render it in the UI.
+        # Convert Plotly figure to HTML and embed in Shiny UI
         html_fragment = fig.to_html(include_plotlyjs="cdn", full_html=False)
         return ui.HTML(html_fragment)
 
-    # Summary UI: small metric cards (simple HTML) showing top numbers
+    # Render comprehensive network statistics for entire graph and selected community
     @output
     @render.ui
     def summary_ui():
@@ -404,7 +447,7 @@ def server(input, output, session):
         except:
             return ui.HTML("<p>Loading...</p>")
         
-        # === ENTIRE GRAPH METRICS ===
+        # ========== ENTIRE GRAPH STATISTICS ==========
         total_nodes = G.number_of_nodes()
         total_edges = G.number_of_edges()
         entire_avg_degree = 2 * total_edges / total_nodes if total_nodes > 0 else 0.0
@@ -413,8 +456,11 @@ def server(input, output, session):
         entire_avg_in = float(all_nodes["in_degree"].mean()) if len(all_nodes) > 0 else 0.0
         entire_avg_out = float(all_nodes["out_degree"].mean()) if len(all_nodes) > 0 else 0.0
         
-        entire_density = nx.density(G)
+        # Retrieve pre-computed density and modularity from cache
+        entire_density = community_data.get('density', nx.density(G))
+        modularity = community_data.get('modularity', 0.0)
         
+        # Classify density
         if entire_density < 0.1:
             entire_density_label = "Low"
         elif entire_density < 0.3:
@@ -422,29 +468,15 @@ def server(input, output, session):
         else:
             entire_density_label = "High"
         
-        # Calculate modularity (using community structure from all_nodes)
-        if len(all_nodes) > 0 and 'community' in all_nodes.columns:
-            communities_dict = {}
-            for _, row in all_nodes.iterrows():
-                comm_id = row['community']
-                if comm_id not in communities_dict:
-                    communities_dict[comm_id] = []
-                communities_dict[comm_id].append(row['node'])
-            communities_list = list(communities_dict.values())
-            modularity = nx.algorithms.community.modularity(G, communities_list)
-            
-            # Classify modularity: low < 0.3, medium 0.3-0.7, high > 0.7
-            if modularity < 0.3:
-                modularity_label = "Low"
-            elif modularity < 0.7:
-                modularity_label = "Medium"
-            else:
-                modularity_label = "High"
+        # Classify modularity
+        if modularity < 0.3:
+            modularity_label = "Low"
+        elif modularity < 0.7:
+            modularity_label = "Medium"
         else:
-            modularity = 0.0
-            modularity_label = "N/A"
+            modularity_label = "High"
         
-        # === SELECTED COMMUNITY METRICS ===
+        # ========== SELECTED COMMUNITY STATISTICS ==========
         community_selected = input.community()
         if community_selected == "all":
             community_section = """
@@ -459,7 +491,7 @@ def server(input, output, session):
             community_avg_in = float(community_df["in_degree"].mean()) if community_nodes_count > 0 else 0.0
             community_avg_out = float(community_df["out_degree"].mean()) if community_nodes_count > 0 else 0.0
             
-            # Create subgraph for this community
+            # Extract subgraph for community-specific calculations
             community_node_list = community_df['node'].tolist()
             community_subgraph = G.subgraph(community_node_list)
             
@@ -476,7 +508,7 @@ def server(input, output, session):
                 community_density = 0.0
                 community_density_label = "N/A"
             
-            # Calculate clustering for community
+            # Calculate average clustering coefficient (measures local connectivity)
             try:
                 community_clustering = nx.average_clustering(community_subgraph.to_undirected())
                 if community_clustering < 0.3:
@@ -489,7 +521,7 @@ def server(input, output, session):
                 community_clustering = 0.0
                 community_clustering_label = "N/A"
             
-            # Calculate reciprocity for community
+            # Calculate reciprocity (percentage of bidirectional edges)
             community_edges = community_subgraph.number_of_edges()
             if community_edges > 0:
                 reciprocal_edges = sum(1 for u, v in community_subgraph.edges() if community_subgraph.has_edge(v, u)) / 2
@@ -497,16 +529,16 @@ def server(input, output, session):
             else:
                 community_reciprocity = 0.0
             
-            # Top products in this community by different metrics
+            # Identify most influential products by different centrality measures
             community_top_products = ""
             if len(community_df) > 0:
                 # Top by Degree
                 if 'degree' in community_df.columns:
                     top_degree_idx = community_df['degree'].idxmax()
                     top_degree_product = community_df.loc[top_degree_idx, 'title']
-                    top_degree_value = community_df.loc[top_degree_idx, 'degree']
+                    top_degree_value = community_df.loc[top_degree_idx, 'in_degree']
                     community_top_products += f"""
-          <p><strong>Top by Degree:</strong> {top_degree_product[:35]}{'...' if len(str(top_degree_product)) > 35 else ''} ({top_degree_value})</p>"""
+          <p><strong>Top Product by In-Degree:</strong> {top_degree_product[:35]}{'...' if len(str(top_degree_product)) > 35 else ''} ({top_degree_value})</p>"""
                 
                 # Top by PageRank
                 if 'pagerank' in community_df.columns:
@@ -514,7 +546,7 @@ def server(input, output, session):
                     top_pagerank_product = community_df.loc[top_pagerank_idx, 'title']
                     top_pagerank_value = community_df.loc[top_pagerank_idx, 'pagerank']
                     community_top_products += f"""
-          <p><strong>Top by PageRank:</strong> {top_pagerank_product[:35]}{'...' if len(str(top_pagerank_product)) > 35 else ''} ({top_pagerank_value:.6f})</p>"""
+          <p><strong>Top Product by PageRank:</strong> {top_pagerank_product[:35]}{'...' if len(str(top_pagerank_product)) > 35 else ''} ({top_pagerank_value:.6f})</p>"""
                 
                 # Top by Eigenvector
                 if 'eigenvector' in community_df.columns:
@@ -522,15 +554,15 @@ def server(input, output, session):
                     top_eigen_product = community_df.loc[top_eigen_idx, 'title']
                     top_eigen_value = community_df.loc[top_eigen_idx, 'eigenvector']
                     community_top_products += f"""
-          <p><strong>Top by Eigenvector:</strong> {top_eigen_product[:35]}{'...' if len(str(top_eigen_product)) > 35 else ''} ({top_eigen_value:.6f})</p>"""
+          <p><strong>Top Product by Eigenvector:</strong> {top_eigen_product[:35]}{'...' if len(str(top_eigen_product)) > 35 else ''} ({top_eigen_value:.6f})</p>"""
             
             community_section = f"""
         <div style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border-radius: 5px;">
           <h5 style="margin-top: 0;">Selected Community</h5>
           <p><strong>Nodes:</strong> {community_nodes_count:,}</p>
-          <p><strong>Avg degree:</strong> {community_avg_degree:.2f} (in: {community_avg_in:.2f}, out: {community_avg_out:.2f})</p>
+          <p><strong>Average In-Degree:</strong> {community_avg_in:.2f}</p>
           <p><strong>Density:</strong> {community_density:.4f} <span style="color: #666;">({community_density_label})</span></p>
-          <p><strong>Avg clustering:</strong> {community_clustering:.4f} <span style="color: #666;">({community_clustering_label})</span></p>
+          <p><strong>Average Clustering:</strong> {community_clustering:.4f} <span style="color: #666;">({community_clustering_label})</span></p>
           <p><strong>Reciprocity:</strong> {community_reciprocity:.1f}% bidirectional</p>{community_top_products}
         </div>"""
         
@@ -540,7 +572,7 @@ def server(input, output, session):
             <h5 style="margin-top: 0;">Entire Graph</h5>
             <p><strong>Nodes:</strong> {total_nodes:,}</p>
             <p><strong>Edges:</strong> {total_edges:,}</p>
-            <p><strong>Avg degree:</strong> {entire_avg_degree:.2f} (in: {entire_avg_in:.2f}, out: {entire_avg_out:.2f})</p>
+            <p><strong>Average In-Degree:</strong> {entire_avg_in:.2f}</p>
             <p><strong>Density:</strong> {entire_density:.6f} <span style="color: #666;">({entire_density_label})</span></p>
             <p><strong>Modularity:</strong> {modularity:.4f} <span style="color: #666;">({modularity_label})</span></p>
           </div>
@@ -550,7 +582,7 @@ def server(input, output, session):
         """
         return ui.HTML(html)
     
-    # Category pie chart
+    # Render pie chart showing distribution of product categories in filtered nodes
     @output
     @render.ui
     def category_pie_chart():
@@ -580,7 +612,7 @@ def server(input, output, session):
         else:
             return ui.HTML("<p>No category data available</p>")
     
-    # Common words list
+    # Extract and display most frequent words from product titles
     @output
     @render.ui
     def common_words_list():
@@ -590,7 +622,7 @@ def server(input, output, session):
             return ui.HTML("<p>Loading...</p>")
         
         if len(df) > 0 and 'title' in df.columns:
-            # Extract all words from titles (lowercase, filter out common stop words)
+            # Tokenize titles and filter out stop words and short words
             stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
                          'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'be', 'been',
                          'unknown', 'product', '-', 'that', 'it', 'this', 'not', 'have', 'has',
@@ -622,6 +654,7 @@ def server(input, output, session):
         else:
             return ui.HTML("<p>No title data available</p>")
 
+    # Render interactive data table with node details and metrics
     @output
     @render.data_frame
     def results_table():
@@ -630,10 +663,10 @@ def server(input, output, session):
         except:
             # Return empty dataframe with message while loading
             return render.DataGrid(pd.DataFrame({"Status": ["Computing metrics... please wait"]}))
-        result_df = df[["node", "title", "group", "community", "degree", "in_degree", "out_degree", 
+        result_df = df[["node", "title", "group", "community", "in_degree", "out_degree", 
                         "pagerank", "eigenvector", "total_review_count", "average_rating"]].copy()
         
-        # Format numeric columns to avoid scientific notation
+        # Format numeric values for readability (avoid scientific notation)
         result_df['pagerank'] = result_df['pagerank'].apply(lambda x: f"{x:.8f}")
         result_df['eigenvector'] = result_df['eigenvector'].apply(lambda x: f"{x:.8f}")
         result_df['average_rating'] = result_df['average_rating'].apply(lambda x: f"{x:.2f}")
@@ -641,15 +674,21 @@ def server(input, output, session):
         
         # Rename columns for display
         result_df = result_df.rename(columns={
+            'node': 'Node ID',
+            'community': 'Community',
             'title': 'Product Name',
-            'group': 'Group',
-            'total_review_count': 'Total Reviews',
-            'average_rating': 'Avg Rating'
+            'group': 'Category',
+            'total_review_count': 'Review Count',
+            'average_rating': 'Average Rating',
+            'in_degree': 'In-Degree',
+            'out_degree': 'Out-Degree',
+            'pagerank': 'PageRank',
+            'eigenvector': 'Eigenvector Centrality'
         })
         
         return render.DataGrid(result_df.reset_index(drop=True), selection_mode="row", height="600px")
     
-    # Observer to track table selection and update selected_node
+    # Reactive observer: sync table row selection to visualization highlighting
     @reactive.effect
     def _():
         selection = results_table.cell_selection()
