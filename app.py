@@ -127,6 +127,12 @@ app_ui = ui.page_fluid(
 
 
 def server(input, output, session):
+    # Reactive value to store selected node
+    selected_node = reactive.Value(None)
+    
+    # Cache for graph layout positions
+    layout_cache = {}
+    
     # Use reactive.calc to compute metrics once and cache them
     @reactive.calc
     def load_data():
@@ -234,13 +240,30 @@ def server(input, output, session):
         
         if viz_type == "bar":
             # Create a bar chart showing top nodes by selected metric
-            fig = px.bar(
-                df,
-                x='node',
-                y=metric,
-                color=metric,
+            # Add highlighting for selected node
+            selected = selected_node()
+            colors = ['red' if node == selected else 'blue' for node in df['node']]
+            
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=df['node'],
+                    y=df[metric],
+                    marker=dict(
+                        color=df[metric],
+                        colorscale='Viridis',
+                        line=dict(
+                            color=colors,
+                            width=3
+                        )
+                    ),
+                    text=df['node'],
+                    hovertemplate='Node: %{text}<br>' + metric + ': %{y}<extra></extra>'
+                )
+            ])
+            fig.update_layout(
                 title=f"Top {top_n} nodes by {metric}",
-                labels={'node': 'Node ID', metric: metric.capitalize()}
+                xaxis_title='Node ID',
+                yaxis_title=metric.capitalize()
             )
             fig.update_xaxes(type='category')
         else:
@@ -249,8 +272,13 @@ def server(input, output, session):
             top_nodes = df['node'].tolist()
             subgraph = G.subgraph(top_nodes).copy()
             
-            # Use spring layout for positioning
-            pos = nx.spring_layout(subgraph, k=0.5, iterations=50)
+            # Create cache key based on the nodes in this subgraph
+            cache_key = tuple(sorted(top_nodes))
+            
+            # Use cached layout if available, otherwise compute and cache it
+            if cache_key not in layout_cache:
+                layout_cache[cache_key] = nx.spring_layout(subgraph, k=0.5, iterations=50, seed=42)
+            pos = layout_cache[cache_key]
             
             # Create edge traces with arrows for directed edges
             edge_traces = []
@@ -295,6 +323,9 @@ def server(input, output, session):
             node_y = []
             node_text = []
             node_color = []
+            node_size = []
+            
+            selected = selected_node()
             
             for node in subgraph.nodes():
                 x, y = pos[node]
@@ -318,6 +349,12 @@ def server(input, output, session):
                     f"Total Reviews: {int(node_info['total_review_count'])}<br>"
                     f"Community: {node_info['community']}"
                 )
+                
+                # Highlight selected node
+                if node == selected:
+                    node_size.append(30)
+                else:
+                    node_size.append(15)
                 node_color.append(node_info[metric])
             
             node_trace = go.Scatter(
@@ -329,13 +366,18 @@ def server(input, output, session):
                     showscale=True,
                     colorscale='Viridis',
                     color=node_color,
-                    size=10,
+                    size=node_size,
                     colorbar=dict(
                         thickness=15,
                         title=metric.capitalize(),
                         xanchor='left'
                     ),
-                    line_width=2))
+                    line=dict(
+                        width=2,
+                        color=['red' if n == selected else 'white' for n in subgraph.nodes()]
+                    )
+                )
+            )
             
             fig = go.Figure(data=edge_traces + [node_trace],
                           layout=go.Layout(
@@ -587,7 +629,7 @@ def server(input, output, session):
             df = get_filtered_df()
         except:
             # Return empty dataframe with message while loading
-            return pd.DataFrame({"Status": ["Computing metrics... please wait"]})
+            return render.DataGrid(pd.DataFrame({"Status": ["Computing metrics... please wait"]}))
         result_df = df[["node", "title", "group", "community", "degree", "in_degree", "out_degree", 
                         "pagerank", "eigenvector", "total_review_count", "average_rating"]].copy()
         
@@ -605,7 +647,21 @@ def server(input, output, session):
             'average_rating': 'Avg Rating'
         })
         
-        return result_df.reset_index(drop=True)
+        return render.DataGrid(result_df.reset_index(drop=True), selection_mode="row", height="600px")
+    
+    # Observer to track table selection and update selected_node
+    @reactive.effect
+    def _():
+        selection = results_table.cell_selection()
+        if selection and "rows" in selection and len(selection["rows"]) > 0:
+            try:
+                df = get_filtered_df()
+                selected_row = list(selection["rows"])[0]
+                if selected_row < len(df):
+                    node_id = df.iloc[selected_row]['node']
+                    selected_node.set(node_id)
+            except:
+                pass
 
 
 app = App(app_ui, server)
