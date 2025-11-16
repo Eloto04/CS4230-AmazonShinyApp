@@ -663,7 +663,7 @@ def server(input, output, session):
         except:
             # Return empty dataframe with message while loading
             return render.DataGrid(pd.DataFrame({"Status": ["Computing metrics... please wait"]}))
-        result_df = df[["node", "title", "group", "community", "in_degree", "out_degree", 
+        result_df = df[["node", "community", "group", "title", "in_degree", 
                         "pagerank", "eigenvector", "total_review_count", "average_rating"]].copy()
         
         # Format numeric values for readability (avoid scientific notation)
@@ -681,7 +681,6 @@ def server(input, output, session):
             'total_review_count': 'Review Count',
             'average_rating': 'Average Rating',
             'in_degree': 'In-Degree',
-            'out_degree': 'Out-Degree',
             'pagerank': 'PageRank',
             'eigenvector': 'Eigenvector Centrality'
         })
